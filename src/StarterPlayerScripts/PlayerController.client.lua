@@ -1,6 +1,11 @@
 --[[
 	PlayerController.client.lua
-	Handles local movement input: walk, sprint, crouch, jump and ADS state sharing.
+	Handles local movement input:
+	- walk (default)
+	- sprint (LeftShift)
+	- crouch toggle (C)
+	- jump (Space, built into Humanoid)
+	- ADS state sharing (Right Mouse)
 ]]
 
 local Players = game:GetService("Players")
@@ -14,8 +19,8 @@ local movementStateRemote = remoteFolder:WaitForChild("MovementState")
 local NORMAL_SPEED = 16
 local SPRINT_SPEED = 24
 local CROUCH_SPEED = 10
-local CROUCH_HIP_HEIGHT = 1
 local NORMAL_HIP_HEIGHT = 2
+local CROUCH_HIP_HEIGHT = 1
 
 local movementState = {
 	IsSprinting = false,
@@ -50,12 +55,12 @@ local function bindCharacter(character)
 	humanoid = character:WaitForChild("Humanoid")
 	humanoid.WalkSpeed = NORMAL_SPEED
 	humanoid.HipHeight = NORMAL_HIP_HEIGHT
+	humanoid.JumpPower = 50 -- Keep jump enabled with a predictable jump arc.
 end
 
 if player.Character then
 	bindCharacter(player.Character)
 end
-
 player.CharacterAdded:Connect(bindCharacter)
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)

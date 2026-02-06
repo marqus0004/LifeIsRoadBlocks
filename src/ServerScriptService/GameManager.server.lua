@@ -1,7 +1,6 @@
 --[[
 	GameManager.server.lua
-	Bootstraps the multiplayer shooter core systems.
-	Creates RemoteEvents and wires server modules.
+	Bootstraps shooter systems and RemoteEvents.
 ]]
 
 local Players = game:GetService("Players")
@@ -47,13 +46,21 @@ local remotes = {
 local weaponService = WeaponService.new(remotes)
 local playerController = PlayerController.new(remotes)
 
-Players.PlayerAdded:Connect(function(player)
+local function onPlayerAdded(player)
 	playerController:BindPlayer(player)
-end)
+end
 
-Players.PlayerRemoving:Connect(function(player)
+local function onPlayerRemoving(player)
+	playerController:UnbindPlayer(player)
 	weaponService:RemovePlayer(player)
-end)
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+	onPlayerAdded(player)
+end
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+Players.PlayerRemoving:Connect(onPlayerRemoving)
 
 remotes.FireWeapon.OnServerEvent:Connect(function(player, payload)
 	weaponService:HandleFire(player, payload)

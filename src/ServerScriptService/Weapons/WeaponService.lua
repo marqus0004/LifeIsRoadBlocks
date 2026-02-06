@@ -1,10 +1,9 @@
 --[[
 	WeaponService.lua
 	Authoritative server-side weapon logic:
-	- Initializes per-player ammo state
-	- Validates fire requests
-	- Applies damage using raycasts
-	- Handles reload requests
+	- Tracks ammo + reload timing per player
+	- Validates fire requests (rate, origin, direction)
+	- Raycasts and applies player damage
 ]]
 
 local Players = game:GetService("Players")
@@ -15,6 +14,7 @@ local WeaponsConfig = require(ReplicatedStorage:WaitForChild("WeaponsConfig"))
 local WeaponService = {}
 WeaponService.__index = WeaponService
 
+local MAX_ORIGIN_DISTANCE_FROM_ROOT = 10
 local playerWeaponState = {}
 
 local function getOrCreateState(player, weaponName)
@@ -31,6 +31,7 @@ local function getOrCreateState(player, weaponName)
 			AmmoInMag = config.MagazineSize,
 			ReserveAmmo = config.ReserveAmmo,
 			LastFireTime = 0,
+			IsReloading = false,
 		}
 	end
 
@@ -57,7 +58,17 @@ function WeaponService:HandleFire(player, payload)
 	end
 
 	local state = getOrCreateState(player, weaponName)
-	if not state then
+	if not state or state.IsReloading then
+		return
+	end
+
+	local character = player.Character
+	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+	if not rootPart then
+		return
+	end
+
+	if (origin - rootPart.Position).Magnitude > MAX_ORIGIN_DISTANCE_FROM_ROOT then
 		return
 	end
 
@@ -71,13 +82,8 @@ function WeaponService:HandleFire(player, payload)
 		return
 	end
 
-	local character = player.Character
-	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-	if not rootPart then
-		return
-	end
-
-	local lookDot = rootPart.CFrame.LookVector:Dot(direction.Unit)
+	local unitDirection = direction.Unit
+	local lookDot = rootPart.CFrame.LookVector:Dot(unitDirection)
 	if lookDot < 0.2 then
 		return
 	end
@@ -88,8 +94,8 @@ function WeaponService:HandleFire(player, payload)
 	local raycastParams = RaycastParams.new()
 	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
 	raycastParams.FilterDescendantsInstances = { character }
-	local rayResult = workspace:Raycast(origin, direction.Unit * config.Range, raycastParams)
 
+	local rayResult = workspace:Raycast(origin, unitDirection * config.Range, raycastParams)
 	if rayResult then
 		local hitModel = rayResult.Instance:FindFirstAncestorOfClass("Model")
 		local humanoid = hitModel and hitModel:FindFirstChildOfClass("Humanoid")
@@ -106,7 +112,7 @@ function WeaponService:HandleFire(player, payload)
 	end
 
 	self.Remotes.AmmoUpdated:FireClient(player, weaponName, state.AmmoInMag, state.ReserveAmmo)
-	self.Remotes.ShotFired:FireAllClients(player, weaponName, origin, direction, isAiming)
+	self.Remotes.ShotFired:FireAllClients(player, weaponName, origin, unitDirection, isAiming)
 end
 
 function WeaponService:HandleReload(player, weaponName)
@@ -120,7 +126,7 @@ function WeaponService:HandleReload(player, weaponName)
 	end
 
 	local state = getOrCreateState(player, weaponName)
-	if not state then
+	if not state or state.IsReloading then
 		return
 	end
 
@@ -128,12 +134,25 @@ function WeaponService:HandleReload(player, weaponName)
 		return
 	end
 
-	local ammoNeeded = config.MagazineSize - state.AmmoInMag
-	local ammoToLoad = math.min(ammoNeeded, state.ReserveAmmo)
-	state.AmmoInMag += ammoToLoad
-	state.ReserveAmmo -= ammoToLoad
+	state.IsReloading = true
+	task.delay(config.ReloadTime, function()
+		if not player.Parent then
+			return
+		end
 
-	self.Remotes.AmmoUpdated:FireClient(player, weaponName, state.AmmoInMag, state.ReserveAmmo)
+		local refreshedState = getOrCreateState(player, weaponName)
+		if not refreshedState then
+			return
+		end
+
+		local ammoNeeded = config.MagazineSize - refreshedState.AmmoInMag
+		local ammoToLoad = math.min(ammoNeeded, refreshedState.ReserveAmmo)
+		refreshedState.AmmoInMag += ammoToLoad
+		refreshedState.ReserveAmmo -= ammoToLoad
+		refreshedState.IsReloading = false
+
+		self.Remotes.AmmoUpdated:FireClient(player, weaponName, refreshedState.AmmoInMag, refreshedState.ReserveAmmo)
+	end)
 end
 
 function WeaponService:GetAmmoState(player, weaponName)

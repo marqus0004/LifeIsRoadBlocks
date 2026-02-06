@@ -1,7 +1,10 @@
 --[[
 	WeaponController.client.lua
-	Handles local firing, recoil, spread, fire modes, ADS/iron sights, and reload.
-	Server remains authoritative for hit detection and ammo state.
+	Client weapon handling:
+	- Fire input and fire modes (single/burst/auto)
+	- Local recoil + spread simulation
+	- ADS / iron-sight camera behavior
+	- Reload requests and ammo sync
 ]]
 
 local Players = game:GetService("Players")
@@ -27,8 +30,10 @@ local remotes = {
 
 local currentWeapon = "Rifle"
 local config = WeaponsConfig[currentWeapon]
+
 local ammoInMag = config.MagazineSize
 local reserveAmmo = config.ReserveAmmo
+local currentFireMode = config.FireMode
 
 local isAiming = false
 local isFiring = false
@@ -36,7 +41,7 @@ local isReloading = false
 local burstShotsLeft = 0
 local lastShotTime = 0
 
--- Animation placeholders. Swap these with Animator tracks after adding real assets.
+-- Placeholder animation hooks. Attach Animator tracks once assets exist.
 local animations = {
 	Shoot = nil,
 	Reload = nil,
@@ -44,17 +49,19 @@ local animations = {
 }
 
 local function updateCrosshairAndHud()
-	-- Placeholder for GUI update hook.
-	-- Example: ScreenGui.AmmoLabel.Text = string.format("%d / %d", ammoInMag, reserveAmmo)
+	-- Placeholder for HUD integration.
+	-- Example: AmmoLabel.Text = string.format("%d / %d [%s]", ammoInMag, reserveAmmo, currentFireMode)
 end
 
 local function setAimState(newState)
 	if isAiming == newState then
 		return
 	end
-	isAiming = newState
 
+	isAiming = newState
 	local targetFov = isAiming and config.AimFov or 70
+
+	-- Iron-sight mechanic: tighten FOV while aiming down sights.
 	TweenService:Create(camera, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
 		FieldOfView = targetFov,
 	}):Play()
@@ -75,19 +82,16 @@ local function applyRecoil()
 end
 
 local function getShotDirection()
-	local mouseLocation = UserInputService:GetMouseLocation()
-	local ray = camera:ViewportPointToRay(mouseLocation.X, mouseLocation.Y)
+	local mousePos = UserInputService:GetMouseLocation()
+	local baseRay = camera:ViewportPointToRay(mousePos.X, mousePos.Y)
 
-	local spreadValue = isAiming and config.AimSpread or config.HipSpread
-	local spreadRadians = math.rad(spreadValue)
+	local spreadDegrees = isAiming and config.AimSpread or config.HipSpread
+	local spreadRadians = math.rad(spreadDegrees)
 	local xSpread = (math.random() - 0.5) * spreadRadians
 	local ySpread = (math.random() - 0.5) * spreadRadians
 
-	local spreadDirection = (CFrame.fromOrientation(ySpread, xSpread, 0).LookVector)
-	local finalDirection = (CFrame.lookAt(Vector3.zero, ray.Direction) * CFrame.new()).LookVector
-	finalDirection = (CFrame.lookAt(Vector3.zero, finalDirection) * CFrame.fromOrientation(ySpread, xSpread, 0)).LookVector
-
-	return ray.Origin, finalDirection.Unit
+	local spreadFrame = CFrame.lookAt(Vector3.zero, baseRay.Direction) * CFrame.Angles(ySpread, xSpread, 0)
+	return baseRay.Origin, spreadFrame.LookVector.Unit
 end
 
 local function canShoot()
@@ -127,7 +131,6 @@ local function fireOneShot()
 	})
 
 	applyRecoil()
-
 	if animations.Shoot then
 		animations.Shoot:Play()
 	end
@@ -137,10 +140,7 @@ local function startReload()
 	if isReloading then
 		return
 	end
-	if ammoInMag >= config.MagazineSize then
-		return
-	end
-	if reserveAmmo <= 0 then
+	if ammoInMag >= config.MagazineSize or reserveAmmo <= 0 then
 		return
 	end
 
@@ -149,10 +149,22 @@ local function startReload()
 		animations.Reload:Play()
 	end
 
+	remotes.ReloadWeapon:FireServer(currentWeapon)
+	-- Client lock for UX while server reload timer runs.
 	task.delay(config.ReloadTime, function()
-		remotes.ReloadWeapon:FireServer(currentWeapon)
 		isReloading = false
 	end)
+end
+
+local function cycleFireMode()
+	if currentFireMode == "Single" then
+		currentFireMode = "Burst"
+	elseif currentFireMode == "Burst" then
+		currentFireMode = "Auto"
+	else
+		currentFireMode = "Single"
+	end
+	updateCrosshairAndHud()
 end
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -162,15 +174,17 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
 		isFiring = true
-		if config.FireMode == "Single" then
+		if currentFireMode == "Single" then
 			fireOneShot()
-		elseif config.FireMode == "Burst" then
+		elseif currentFireMode == "Burst" then
 			burstShotsLeft = config.BurstCount
 		else
 			fireOneShot()
 		end
 	elseif input.KeyCode == Enum.KeyCode.R then
 		startReload()
+	elseif input.KeyCode == Enum.KeyCode.B then
+		cycleFireMode()
 	elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
 		setAimState(true)
 	end
@@ -190,13 +204,11 @@ RunService.RenderStepped:Connect(function()
 		return
 	end
 
-	if config.FireMode == "Auto" then
+	if currentFireMode == "Auto" then
 		fireOneShot()
-	elseif config.FireMode == "Burst" and burstShotsLeft > 0 then
-		if canShoot() then
-			fireOneShot()
-			burstShotsLeft -= 1
-		end
+	elseif currentFireMode == "Burst" and burstShotsLeft > 0 and canShoot() then
+		fireOneShot()
+		burstShotsLeft -= 1
 	end
 end)
 
@@ -204,8 +216,12 @@ remotes.AmmoUpdated.OnClientEvent:Connect(function(weaponName, newAmmoInMag, new
 	if weaponName ~= currentWeapon then
 		return
 	end
+
 	ammoInMag = newAmmoInMag
 	reserveAmmo = newReserveAmmo
+	if ammoInMag > 0 then
+		isReloading = false
+	end
 	updateCrosshairAndHud()
 end)
 
@@ -213,8 +229,7 @@ remotes.ShotFired.OnClientEvent:Connect(function(shooter, weaponName)
 	if shooter == player or weaponName ~= currentWeapon then
 		return
 	end
-	-- Placeholder for other-player firing effects:
-	-- play muzzle flash, play sound, spawn tracers.
+	-- Placeholder for replication VFX/SFX (muzzle flash, tracers, sounds).
 end)
 
 remotes.RequestAmmo:FireServer(currentWeapon)
